@@ -7,7 +7,8 @@ import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
 from numpy.typing import NDArray
 from typing import Optional
-from functions.graph_construction import OnDiskStencilGraph, CustomLoader
+from functions.graph_construction import OnDiskStencilGraph, VariableStencilGraph, CustomLoader
+from functions.stencil_growth import StencilGrowth
 from torch.optim.lr_scheduler import ReduceLROnPlateau, LinearLR
 from functions.Plots import plot_training_pytorch
 from functions.gnn_preproc import load
@@ -36,7 +37,9 @@ def construct_data_loader(cpu_cores: int,
                            test_idx: NDArray,
                           distances: NDArray,
                           prefetch_factor: int,
-                          root: Optional[str] = ''):
+                          root: Optional[str] = '',
+                          variable_stencil: bool = False,
+                          initial_stencil: int = 5):
 
     test_root = os.path.join(root, 'test_graphs')
     val_root  = os.path.join(root, 'val_graphs')
@@ -45,14 +48,20 @@ def construct_data_loader(cpu_cores: int,
     pin_memory = True
 
     logger.info('Creating graphs')
-    test_ds = OnDiskStencilGraph(features=distances[test_idx],
-                           root=test_root)
+    if variable_stencil:
+        # every point gets its own stencil size, starting at initial_stencil (grown during training)
+        test_ds = VariableStencilGraph(features=distances[test_idx], initial_size=initial_stencil)
+        val_ds = VariableStencilGraph(features=distances[val_idx], initial_size=initial_stencil)
+        train_ds = VariableStencilGraph(features=distances[train_idx], initial_size=initial_stencil)
+    else:
+        test_ds = OnDiskStencilGraph(features=distances[test_idx],
+                               root=test_root)
 
-    val_ds = OnDiskStencilGraph(features=distances[val_idx],
-                           root=val_root)
+        val_ds = OnDiskStencilGraph(features=distances[val_idx],
+                               root=val_root)
 
-    train_ds = OnDiskStencilGraph(features=distances[train_idx],
-                           root=train_root)
+        train_ds = OnDiskStencilGraph(features=distances[train_idx],
+                               root=train_root)
 
     logger.info('Creating data loader')
     test_loader = CustomLoader(test_ds,
@@ -102,7 +111,8 @@ def train_model(model_id: int,
                 checkpoint_p_epoch: int,
                 checkpoint_path: str,
                 approximation_order: int,
-                resume_training: str):
+                resume_training: str,
+                growth: Optional[StencilGrowth] = None):
 
     if torch.cuda.is_available():
         device = 'cuda'
@@ -151,6 +161,10 @@ def train_model(model_id: int,
         best_val_loss = attrs['best_val_loss']
         model_id      = attrs['model_id']
 
+        if growth is not None and 'stencil_sizes' in attrs:
+            train_loader.data.stencil_sizes[:] = attrs['stencil_sizes']['train']
+            val_loader.data.stencil_sizes[:]   = attrs['stencil_sizes']['val']
+
     else:
         model = NEMDO(input_size=input_size,
                          output_size=1,
@@ -198,7 +212,15 @@ def train_model(model_id: int,
     mon_power = torch.tensor(mon_power, dtype=torch.float32, device=device).T
     sum_aggr = SumAggregation().to(device=device)
 
-    model.compile()
+    # stencil sizes (and so graph sizes) change between batches and epochs when they are grown
+    model.compile(dynamic=growth is not None)
+
+    if growth is not None:
+        train_sizes = train_loader.data.stencil_sizes
+        val_sizes   = val_loader.data.stencil_sizes
+        # most recent loss of every point since its stencil last changed (NaN = not measured yet)
+        train_pt_loss = torch.full((len(train_sizes),), float('nan'), device=device)
+        val_pt_loss   = torch.full((len(val_sizes),), float('nan'), device=device)
 
     # get list of CPUs available to attach processes, can also be manually picked
     allowed = sorted(os.sched_getaffinity(0))
@@ -235,6 +257,9 @@ def train_model(model_id: int,
 
                 loss = F.mse_loss(target_moments, pred_m)
 
+                if growth is not None:
+                    train_pt_loss[batch.point_idx] = ((target_moments - pred_m) ** 2).mean(dim=0).detach()
+
                 loss = loss #* loss_scaling
 
                 loss.backward()
@@ -267,6 +292,9 @@ def train_model(model_id: int,
 
                     val_loss = F.mse_loss(target_moments, pred_m)
 
+                    if growth is not None:
+                        val_pt_loss[batch.point_idx] = ((target_moments - pred_m) ** 2).mean(dim=0)
+
                     total_loss += val_loss#.detach()
 
                 val_loss = total_loss / num_batches
@@ -292,6 +320,20 @@ def train_model(model_id: int,
 
         if not resume_training: linear_scheduler.step()
 
+        if growth is not None and growth.stalled(float(train_loss)):
+            # loss has stalled: give the worst points (per dataset) a bigger stencil
+            grew_train = growth.grow(train_sizes, train_pt_loss.cpu())
+            grew_val   = growth.grow(val_sizes, val_pt_loss.cpu())
+            train_pt_loss[grew_train.to(device)] = float('nan')
+            val_pt_loss[grew_val.to(device)] = float('nan')
+            growth.reset()
+            # validation losses on different stencils are not comparable, so best-model tracking restarts
+            best_val_loss = torch.inf
+            logger.info(f'Loss stalled: grew {int(grew_train.sum())}/{len(train_sizes)} train stencils || '
+                        f'mean stencil size train {train_sizes.float().mean():.2f} '
+                        f'(min {int(train_sizes.min())}, max {int(train_sizes.max())}) || '
+                        f'val {val_sizes.float().mean():.2f}')
+
         if epoch % checkpoint_p_epoch == 0:
             save_dict = {'train_history' : train_history,
                          'val_history'   : val_history,
@@ -307,6 +349,8 @@ def train_model(model_id: int,
                          'approximation_order': approximation_order,
                          'model_id'      : model_id,
                          'loss_scaling'  : loss_scaling}
+            if growth is not None:
+                save_dict['stencil_sizes'] = {'train': train_sizes.clone(), 'val': val_sizes.clone()}
             e = epoch + resume_epoch
             save_path = jn(checkpoint_path, f'attrs{model_id}_epoch{check_epoch}.pth')
             torch.save(save_dict, save_path)
@@ -327,6 +371,8 @@ def train_model(model_id: int,
                  'approximation_order': approximation_order,
                  'model_id'      : model_id,
                  'loss_scaling'  : loss_scaling}
+    if growth is not None:
+        save_dict['stencil_sizes'] = {'train': train_sizes.clone(), 'val': val_sizes.clone()}
 
     save_path = jn(out_path, f'attrs{model_id}.pth')
 
@@ -358,6 +404,15 @@ if __name__=='__main__':
     root_dir_graphs    = 'graphs'                          # root dir for graphs to be saved
     base_path          = 'preproc_data'                    # root dir to get imported preproc data
 
+    variable_stencil = True                                # each point gets its own stencil size, grown when the loss stalls
+    initial_stencil    = 5                                 # starting stencil size of every point
+    stencil_step       = 2                                 # neighbours added to a point's stencil each time it grows
+    growth_patience    = 10                                # epochs without improvement before the stencils grow
+    growth_rel_tol     = 1e-2                              # relative train loss improvement that counts as progress
+    growth_cooldown    = 5                                 # epochs to wait after growing before checking for a stall
+    growth_quantile    = 0.5                               # only points with loss above this quantile grow (0 = all)
+    converged_tol      = 0.0                               # points with per-point loss below this stop growing
+
     train = True                                         # set train=False and plot=True to only visualise training loss
     plot  = True                                          # plots training-validation curve when finished training
 
@@ -379,7 +434,19 @@ if __name__=='__main__':
                                                test_idx=test_idx,
                                                distances=distances,
                                                prefetch_factor=prefetch_factor,
-                                               root=root_dir_graphs)
+                                               root=root_dir_graphs,
+                                               variable_stencil=variable_stencil,
+                                               initial_stencil=initial_stencil)
+
+        growth = None
+        if variable_stencil:
+            growth = StencilGrowth(max_size=distances.shape[1],
+                                   step=stencil_step,
+                                   patience=growth_patience,
+                                   rel_tol=growth_rel_tol,
+                                   cooldown=growth_cooldown,
+                                   quantile=growth_quantile,
+                                   converged_tol=converged_tol)
 
         os.makedirs(out_path, exist_ok=True)
         os.makedirs(checkpoint_path, exist_ok=True)
@@ -397,7 +464,8 @@ if __name__=='__main__':
                     checkpoint_p_epoch,
                     checkpoint_path,
                     approximation_order,
-                    continue_train_model)
+                    continue_train_model,
+                    growth)
 
 
     if plot:

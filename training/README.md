@@ -80,6 +80,21 @@ Run:
 **Entry point:** `main_train`
 Model architecture, training hyperparameters, and DDP settings are configured directly within this script or via the corresponding modules in `models/`.
 
+#### Variable (growing) stencils
+
+With `variable_stencil = True` in both `main_import.py` and `main_train_gpu.py`, every point starts with a stencil of
+`initial_stencil` (5) neighbours and its own stencil grows during training:
+
+- `main_import.py` stores the raw (un-normalised) neighbour offsets, up to `max_neighbours`. Each point's offsets are
+  normalised on the fly by the largest distance in its *current* stencil (`VariableStencilGraph`).
+- When the training loss stalls (`growth_patience` epochs without a `growth_rel_tol` relative improvement), the points
+  with the worst per-point moment loss (above `growth_quantile`) gain `stencil_step` neighbours, up to `max_neighbours`
+  (`functions/stencil_growth.py`). Points below `converged_tol` stop growing.
+- The per-point sizes are saved in the checkpoints (`stencil_sizes`) and restored when resuming.
+- Best-validation tracking restarts after each growth, since losses on different stencils are not comparable.
+
+`main_test.py` still expects the fixed-size, pre-normalised data (`variable_stencil = False`).
+
 ### Evaluation
 
 **Entry point:** `main_test`

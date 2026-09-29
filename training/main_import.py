@@ -13,7 +13,8 @@ def import_parallel(data_path: str,
                     n_cores: int,
                     save_path: str,
                     max_neighbours: Optional[int] = None,
-                    plot_stencils: Optional[bool] = False) -> None:
+                    plot_stencils: Optional[bool] = False,
+                    variable_stencil: Optional[bool] = False) -> None:
 
     from functions.parallel_load import load_and_stack_ij_links
 
@@ -24,9 +25,12 @@ def import_parallel(data_path: str,
     if max_neighbours:
         max_neighbours = min(max_neighbours, distances.shape[1])
         distances   = distances[:, :max_neighbours, :]
-        r_distances = (distances[..., 0] ** 2 + distances[..., 1] ** 2) ** .5
-        max_r       = np.max(r_distances, axis=1)
-        distances   = distances / (max_r[..., None, None])
+        # with a variable stencil the normalisation depends on each point's current stencil size, so it is done on
+        # the fly by VariableStencilGraph and the raw offsets are stored here
+        if not variable_stencil:
+            r_distances = (distances[..., 0] ** 2 + distances[..., 1] ** 2) ** .5
+            max_r       = np.max(r_distances, axis=1)
+            distances   = distances / (max_r[..., None, None])
 
     if plot_stencils:
         plot_kernel(distances)
@@ -66,8 +70,9 @@ if __name__ == '__main__':
     data_iteration    = 4                                   # which file iteration to read
     n_cores           = 4                                   # number of threads to read data
     root              = 'preproc_data'                      # directory to save preprocessed data
-    max_neighbours    = 20                                  # stencil size
+    max_neighbours    = 20                                  # stencil size (maximum stencil size if variable_stencil)
     plot_stencil      = False                               # plots stencil
+    variable_stencil  = True                                # keep raw offsets so training can grow each point's stencil
 
     # directories where each dataset will be saved
     test_root  = os.path.join(root, 'test_graphs')
@@ -82,5 +87,6 @@ if __name__ == '__main__':
                     save_path=save_path,
                     n_cores=n_cores,
                     max_neighbours=max_neighbours,
-                    plot_stencils=plot_stencil)
+                    plot_stencils=plot_stencil,
+                    variable_stencil=variable_stencil)
 

@@ -1,0 +1,12 @@
+# Boundary-aware NeMDO training.
+#
+# Unlike training/requirements.txt these are not pinned to CUDA 12.9 wheels: the
+# package runs on CPU as shipped (the default configuration trains in well under an
+# hour), and picks up a GPU automatically if torch finds one. Install the CUDA build
+# of torch from https://pytorch.org if you want one.
+
+torch>=2.2
+torch-geometric>=2.5
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7

@@ -187,6 +187,43 @@ accuracy — the realistic goals are:
 `main_eval_bc.py` prints both side by side on a held-out shape, so the comparison is
 visible rather than asserted.
 
+### Measured on a reference run
+
+Shipped defaults: 10k stencils, `K = 35`, 196k parameters, 300 epochs, ~50 min on
+CPU. Held-out star blob not in the training mix, 1499 nodes, 120 on the boundary.
+Relative L2 error on `u = sin(3x)cos(2y) + x³`:
+
+| operator | NeMDO interior | NeMDO wall | classical interior | classical wall |
+|---|---|---|---|---|
+| `d/dx` | 1.4e-2 | 3.2e-2 | 1.5e-3 | 1.6e-3 |
+| `d/dy` | 8.3e-2 | 8.0e-2 | 2.3e-3 | 4.1e-3 |
+| Laplacian | 1.7e-1 | 1.9e-1 | 3.9e-3 | 2.2e-2 |
+
+Normal derivative at the 120 boundary nodes: 5.6e-2 relative L2 (classical 1.3e-3).
+
+Read these honestly. **The learned operator is well short of classical in absolute
+accuracy** — one to two orders of magnitude on this run, worst on the Laplacian. That
+is what the section above predicts, and this run is also under-trained: validation
+loss was still falling at epoch 300.
+
+What *does* hold up is the boundary-specific behaviour, which is the point of the
+module:
+
+- **Error is flat from interior to wall.** The learned Laplacian goes 1.7e-1 → 1.9e-1
+  (1.1×) while the classical one goes 3.9e-3 → 2.2e-2 (5.5×). The learned operator
+  degrades far less at the boundary, which is the robustness claim and the thing the
+  shipped interior-only checkpoints cannot do at all.
+- **Weights stay bounded on bad stencils.** Largest Laplacian weight: NeMDO 307
+  interior / 333 wall; classical 977 / 1710. The wall stencils are 3.3× worse
+  conditioned, and the penalised network barely notices.
+- **The Neumann row exists**, which it did not before.
+
+To close the accuracy gap: more data first (lower `spacing` in
+`main_build_dataset.py`; 10k stencils is small), then longer training, then give the
+Laplacian its own model rather than sharing a trunk with the first derivatives — the
+shared trunk is convenient but the original NeMDO trains one network per operator and
+its Laplacian model alone is ~3× the size of this whole one.
+
 To actually beat classical weights on accuracy, the operator has to know something a
 polynomial constraint does not — i.e. train a *correction* on solution data from the
 PDE you care about, on top of these consistency-trained weights. That keeps

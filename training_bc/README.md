@@ -63,10 +63,17 @@ solutions. Classical methods avoid this by taking the *minimum-norm* solve; a sm
 cd training_bc
 pip install -r requirements.txt
 
-python main_build_dataset.py   # generate clouds, extract stencils  (~1 min)
-python main_train_bc.py        # train d/dx, d/dy and the Laplacian (~45 min on CPU)
-python main_eval_bc.py         # evaluate on a held-out shape
+python test_sanity.py             # invariants; seconds, no trained model needed
+python main_build_dataset.py      # generate clouds, extract stencils  (~1 min)
+python main_train_bc.py           # train d/dx, d/dy and the Laplacian (~50 min on CPU)
+python main_eval_bc.py            # evaluate on a held-out shape
+python main_train_correction.py   # data-driven correction            (~5 min)
+python main_eval_correction.py    # does it help, and what it costs
 ```
+
+Stages 4–5 only need stage 1, because the correction's default base is the classical
+solve rather than the stage-2 model. To see the correction result quickly, run stages
+1, 4, 5 and skip the long train.
 
 Defaults are CPU-friendly. For a production operator, lower `spacing` in
 `main_build_dataset.py` (more stencils) and raise `embedding_size` / `epochs`.
@@ -80,6 +87,8 @@ training_bc/
 ├── main_build_dataset.py    # stage 1: node clouds -> stencil dataset
 ├── main_train_bc.py         # stage 2: multi-operator self-supervised training
 ├── main_eval_bc.py          # stage 3: held-out evaluation vs classical weights
+├── main_train_correction.py # stage 4: data-driven correction on solution fields
+├── main_eval_correction.py  # stage 5: in/out of distribution, exactness, convergence
 ├── test_sanity.py           # invariant checks (run this after any change)
 ├── functions/
 │   ├── domains.py           # SDF-defined domains, node placement, outward normals
@@ -89,9 +98,13 @@ training_bc/
 │   ├── classical.py         # least-squares reference weights, conditioning
 │   ├── infer.py             # trained model -> assembly-ready weights
 │   ├── mesh_io.py           # read an external node set (your own mesh)
-│   └── plots.py             # geometry check and error-field figures
+│   ├── plots.py             # geometry check and error-field figures
+│   ├── projection.py        # null-space projection: consistency the correction can't break
+│   ├── fields.py            # solution-field families + COMSOL snapshot ingestion
+│   └── correction.py        # base weights, features, operator application
 └── models/
-    └── nemdo_bc.py          # shared trunk, one head per operator
+    ├── nemdo_bc.py          # shared trunk, one head per operator
+    └── nemdo_correction.py  # correction network over a frozen base
 ```
 
 `python test_sanity.py` (seconds, no trained model needed) checks the things that
@@ -225,13 +238,86 @@ shared trunk is convenient but the original NeMDO trains one network per operato
 its Laplacian model alone is ~3× the size of this whole one.
 
 To actually beat classical weights on accuracy, the operator has to know something a
-polynomial constraint does not — i.e. train a *correction* on solution data from the
-PDE you care about, on top of these consistency-trained weights. That keeps
-convergence on fine meshes while buying accuracy per degree of freedom on coarse
-ones, at the cost of making the correction PDE-specific. This package is the base
-layer that such a correction would sit on; it is deliberately not included here.
+polynomial constraint does not. That is what stages 4 and 5 do — see
+[The data-driven correction](#the-data-driven-correction-stages-4-5).
 
 Other current limits: 2D only; fixed stencil size `K` per trained model; the operator
 is not symmetric or sign-constrained, so a heat operator assembled from it is not
 guaranteed monotone (constraining the Laplacian head to symmetric non-negative edge
 conductances is the natural next change).
+
+---
+
+## The data-driven correction (stages 4–5)
+
+A consistency-trained operator treats every polynomial of degree ≤ p as equally
+important. A real PDE does not produce arbitrary polynomials — a diffusion problem
+produces smooth fields with particular spectral content, plus boundary layers. An
+operator tuned to *that* distribution can beat one tuned to polynomials, at the same
+stencil size. Stage 4 learns that tuning.
+
+```bash
+python main_train_correction.py   # ~5 min on CPU
+python main_eval_correction.py
+```
+
+The corrected weights are `w = w_base + Δw` with **`A·Δw = 0`**: the correction is
+projected onto the null space of the moment conditions, so it *cannot* change what
+the operator does to polynomials, whatever it learns. Consistency is structural here,
+not something the loss is trusted to preserve.
+
+This also makes the comparison fair. The classical weighted least-squares solve is
+itself just one point of the affine set `{w : A w = t}` — the minimum-norm point. The
+correction searches the *same* set for a point that suits your solutions better, so
+beating it is a statement about the choice within the set, not about breaking the
+rules.
+
+The default base is the **classical solve**, not the stage-2 model: producing
+consistent weights is a solved problem a local solve does exactly and for free, so
+there is little point spending network capacity reproducing it. Set
+`base_kind = "nemdo"` when the local solve is the cost you are trying to avoid, e.g.
+nodes that move every step.
+
+### The trade-off this exposes, measured
+
+Which moments the correction may not touch (`projection_order`) is the whole game, and
+it is *not* simply "the base's consistency order". Measured on the shipped defaults,
+held-out fields, held-out shape:
+
+| `projection_order` | free dims (of 35) | gain in band | gain on coarse fields | convergence order (base: 2.05 / 1.69 / 1.72) |
+|---|---|---|---|---|
+| 2 | 30 | **2.10×** | 1.39× | 1.63 / 1.55 / **1.17** — destroyed |
+| **3** (default) | 26 | 1.18× | **1.55×** | 2.09 / 1.72 / 1.74 — intact |
+| 4 | 21 | 1.04× | 1.08× | 2.03 / 1.68 / 1.73 — intact |
+
+Read the first row carefully, because it is the trap. Projecting against only the
+base's own consistency order (2) gives by far the best-looking numbers and an operator
+that **stops improving under refinement** — on the finest mesh tested it was *worse*
+than the classical solve it was meant to beat. The reason: order-2 projection pins the
+leading Taylor terms but leaves the **third**-order moments free, and for a
+second-order-consistent Laplacian those carry the O(h) truncation term. The classical
+minimum-norm solve happens to keep them small, which is why it converges faster than
+its nominal order; the correction has no such incentive and spends them.
+
+So the freedom that buys coarse-mesh accuracy is *the same freedom* that controls the
+convergence rate. You cannot have both, and `projection_order = 3` is where you keep
+convergence and still get a real gain.
+
+Note where that gain sits: **1.55× on under-resolved fields (PPW 3–8), 1.03× on very
+smooth ones.** That is the right shape — on a well-resolved field the classical
+stencil is already near-optimal and there is nothing to win. A correction that claimed
+a uniform speedup everywhere would be a reason for suspicion, not celebration.
+
+### Fields to train against
+
+`functions/fields.py` supplies families with analytic Laplacians (`fourier`, `bumps`,
+`layer`, `polynomial`), parameterised by **points per wavelength** — how well the node
+spacing resolves the field, which is the knob that decides whether there is anything
+to win. Train on the band you actually solve in.
+
+For COMSOL data, `load_comsol_snapshots` recovers the target from the heat equation
+itself (`∇²u = (u_t − f)/α`, with `u_t` differenced from snapshots), since COMSOL does
+not export the Laplacian. The target inherits the time-differencing error, so export
+closely spaced snapshots. **That function has not been run against a real export** —
+no file was available — so check the parsed shapes before relying on it. Training the
+first correction on synthetic fields and using COMSOL to *validate* is the safer order.

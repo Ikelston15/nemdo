@@ -133,6 +133,53 @@ def main() -> None:
     check("edge count", ei.shape[1] == expect_edges, f"{ei.shape[1]} == {expect_edges}")
     check("centres are node 0 of each graph", centres == {0, 5, 10}, str(sorted(centres)))
 
+    # 8. The correction must not be able to damage consistency, whatever it outputs.
+    print("\n8. null-space projection preserves consistency")
+    from functions.correction import apply_correction
+    from functions.projection import null_space_dimension, projector_numpy
+
+    b = 16
+    sel = rng.choice(len(st), b, replace=False)
+    kk = st.stencil_size
+    x = torch.from_numpy(st.features[sel].reshape(b * kk, -1))
+    base_np = np.stack([classical_weights(st.features[i][:, :2].astype(np.float64),
+                                          ["laplace"], ORDER)[:, 0] for i in sel])
+    base = torch.from_numpy(base_np.astype(np.float32))
+    mp, inv = monomial_basis(ORDER)
+
+    # a deliberately hostile correction: large, random, and the same order as the base
+    raw = torch.from_numpy(
+        (rng.normal(size=(b * kk, 1)) * np.abs(base_np).max()).astype(np.float32))
+    w_corr, delta = apply_correction(raw, x, base, mp, inv, b, kk)
+
+    before = np.stack([moment_matrix(st.features[i][:, :2].astype(np.float64), ORDER)
+                       @ base_np[j] for j, i in enumerate(sel)])
+    after = np.stack([moment_matrix(st.features[i][:, :2].astype(np.float64), ORDER)
+                      @ w_corr[j].detach().numpy().astype(np.float64)
+                      for j, i in enumerate(sel)])
+    moved = np.abs(after - before).max()
+    size = float(np.abs(delta.detach().numpy()).mean())
+    check("moments unchanged by a large random correction", moved < 1e-4,
+          f"max moment shift {moved:.2e} for a correction of mean size {size:.3g}")
+    check("the correction is not simply zero", size > 1e-3, f"mean |delta| {size:.3g}")
+
+    tgt = target_moments(["laplace"], ORDER)[:, 0]
+    hit = np.abs(after - tgt[None, :]).max()
+    check("corrected weights still hit the laplace target", hit < 1e-4,
+          f"max deviation {hit:.2e}")
+
+    # the projector from numpy must agree with the torch path
+    i0 = int(sel[0])
+    P = projector_numpy(st.features[i0][:, :2].astype(np.float64), ORDER)
+    d_np = P @ raw.numpy()[0:kk, 0].astype(np.float64)
+    check("torch projection matches numpy I - A^+A",
+          np.abs(d_np - delta[0].detach().numpy()).max() < 1e-3 * max(np.abs(d_np).max(), 1),
+          f"max abs diff {np.abs(d_np - delta[0].detach().numpy()).max():.2e}")
+
+    dim = null_space_dimension(kk, ORDER)
+    rank = np.linalg.matrix_rank(P)
+    check("null space has the expected dimension", rank == dim, f"rank {rank} == {dim}")
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} check(s) FAILED: {', '.join(FAILURES)}")

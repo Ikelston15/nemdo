@@ -1,0 +1,144 @@
+{
+  "n_nodes": 1499,
+  "region_counts": {
+    "deep interior": 1037,
+    "near wall": 342,
+    "wall": 120
+  },
+  "methods": {
+    "shipped nemdo_x/lap": {
+      "moment_rms": {
+        "x": {
+          "deep interior": 3.6808395493711438e-06,
+          "near wall": 0.0015776952309787718,
+          "wall": 0.05760213399765588
+        },
+        "y": {
+          "deep interior": 3.8055697148402635e-06,
+          "near wall": 0.0016800828572867735,
+          "wall": 0.04865518161843496
+        },
+        "laplace": {
+          "deep interior": 3.946244788333888e-05,
+          "near wall": 0.01717524968925955,
+          "wall": 0.13908295850763033
+        }
+      },
+      "rel_l2": {
+        "sin(3x)cos(2y)+x^3": {
+          "x": {
+            "deep interior": 0.002967921385585062,
+            "near wall": 0.06681029226184307,
+            "wall": 1.1564468849129552
+          },
+          "y": {
+            "deep interior": 0.003912296362576362,
+            "near wall": 0.1610490622964446,
+            "wall": 1.3188712318743128
+          },
+          "laplace": {
+            "deep interior": 0.006791017664222097,
+            "near wall": 1.4744255323221778,
+            "wall": 5.169739133501242
+          },
+          "normal_wall": 1.6350974043276703
+        },
+        "off-centre Gaussian": {
+          "x": {
+            "deep interior": 0.0200844530385308,
+            "near wall": 0.13143528917684946,
+            "wall": 2.050396871561607
+          },
+          "y": {
+            "deep interior": 0.020531445444121707,
+            "near wall": 0.12677389999891875,
+            "wall": 2.1162585516771157
+          },
+          "laplace": {
+            "deep interior": 0.017598224711859775,
+            "near wall": 3.226853133805896,
+            "wall": 11.206607514205896
+          },
+          "normal_wall": 1.4132004645408207
+        }
+      },
+      "max_abs_w_lap_norm": {
+        "deep interior": 0.5751131176948547,
+        "near wall": 1.3123573064804077,
+        "wall": 1.3056334257125854
+      },
+      "frac_bad_centre": {
+        "deep interior": 0.0,
+        "near wall": 0.0,
+        "wall": 0.225
+      }
+    },
+    "classical WLS": {
+      "moment_rms": {
+        "x": {
+          "deep interior": 8.648078242415227e-10,
+          "near wall": 1.5670747763630145e-09,
+          "wall": 2.028370129899642e-09
+        },
+        "y": {
+          "deep interior": 8.569611651088356e-10,
+          "near wall": 1.5685954586820417e-09,
+          "wall": 1.9980555136176158e-09
+        },
+        "laplace": {
+          "deep interior": 1.2495852334368993e-09,
+          "near wall": 1.467261991333306e-09,
+          "wall": 4.748943476005971e-09
+        }
+      },
+      "rel_l2": {
+        "sin(3x)cos(2y)+x^3": {
+          "x": {
+            "deep interior": 0.0014991721417762448,
+            "near wall": 0.0015044276069369927,
+            "wall": 0.0016458565939982883
+          },
+          "y": {
+            "deep interior": 0.002009869208663884,
+            "near wall": 0.0025038591979859516,
+            "wall": 0.004088752677841555
+          },
+          "laplace": {
+            "deep interior": 0.0036027826770327234,
+            "near wall": 0.004433908129392751,
+            "wall": 0.021634094710985395
+          },
+          "normal_wall": 0.001340329195462401
+        },
+        "off-centre Gaussian": {
+          "x": {
+            "deep interior": 0.00980684573877201,
+            "near wall": 0.008513721150321377,
+            "wall": 0.009971969679423825
+          },
+          "y": {
+            "deep interior": 0.010036544957349017,
+            "near wall": 0.007924490237248292,
+            "wall": 0.007498482278208863
+          },
+          "laplace": {
+            "deep interior": 0.009700041252883646,
+            "near wall": 0.06033305774317815,
+            "wall": 0.3748733619756972
+          },
+          "normal_wall": 0.007134173797277847
+        }
+      },
+      "max_abs_w_lap_norm": {
+        "deep interior": 2.497814280799462,
+        "near wall": 6.9028949978342204,
+        "wall": 14.771941295043257
+      },
+      "frac_bad_centre": {
+        "deep interior": 0.0,
+        "near wall": 0.0,
+        "wall": 0.9666666666666667
+      }
+    }
+  }
+}
